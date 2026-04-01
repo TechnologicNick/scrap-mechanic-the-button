@@ -19,6 +19,8 @@ type ServerStateMessage = {
   serverNowTs: number;
   lastResetAtTs: number;
   lastResetSource: ResetSource;
+  powNonce: null | string;
+  powDifficultyBits: number;
   sequence: number;
 };
 
@@ -28,6 +30,8 @@ type SocketSnapshot = {
   serverOffsetMs: number;
   lastResetAtTs: number | null;
   lastResetSource: ResetSource;
+  powNonce: null | string;
+  powDifficultyBits: number;
   sequence: number;
 };
 
@@ -37,6 +41,8 @@ const INITIAL_SOCKET_SNAPSHOT: SocketSnapshot = {
   serverOffsetMs: 0,
   lastResetAtTs: null,
   lastResetSource: "initial",
+  powNonce: null,
+  powDifficultyBits: 0,
   sequence: 0,
 };
 
@@ -96,6 +102,7 @@ function useButtonAudio() {
 
 function useButtonSocket() {
   const socketRef = useRef<WebSocket | null>(null);
+  const solveCounterRef = useRef(0);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const [snapshot, setSnapshot] = useState<SocketSnapshot>(
     INITIAL_SOCKET_SNAPSHOT,
@@ -164,12 +171,15 @@ function useButtonSocket() {
           return;
         }
 
+        solveCounterRef.current += 1;
         setSnapshot({
           connectionState: "open",
           deadlineTs: message.deadlineTs,
           serverOffsetMs: message.serverNowTs - Date.now(),
           lastResetAtTs: message.lastResetAtTs,
           lastResetSource: message.lastResetSource,
+          powNonce: message.powNonce,
+          powDifficultyBits: message.powDifficultyBits,
           sequence: message.sequence,
         });
       });
@@ -190,14 +200,75 @@ function useButtonSocket() {
     };
   }, []);
 
-  const pressButton = () => {
+  const countLeadingZeroBits = (bytes: Uint8Array) => {
+    let zeroBits = 0;
+
+    for (const byte of bytes) {
+      if (byte === 0) {
+        zeroBits += 8;
+        continue;
+      }
+
+      for (let bit = 7; bit >= 0; bit -= 1) {
+        if ((byte & (1 << bit)) === 0) {
+          zeroBits += 1;
+        } else {
+          return zeroBits;
+        }
+      }
+    }
+
+    return zeroBits;
+  };
+
+  const solveProofOfWork = async (
+    nonce: string,
+    difficultyBits: number,
+  ) => {
+    const encoder = new TextEncoder();
+
+    for (let proof = 0; ; proof += 1) {
+      const payload = encoder.encode(`${nonce}:${proof}`);
+      const digest = await crypto.subtle.digest("SHA-256", payload);
+      const digestBytes = new Uint8Array(digest);
+
+      if (countLeadingZeroBits(digestBytes) >= difficultyBits) {
+        return proof;
+      }
+
+      if (proof % 512 === 0) {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      }
+    }
+  };
+
+  const pressButton = async () => {
     const socket = socketRef.current;
 
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
+    if (
+      !socket ||
+      socket.readyState !== WebSocket.OPEN ||
+      !snapshot.powNonce ||
+      snapshot.powDifficultyBits <= 0
+    ) {
       return false;
     }
 
-    socket.send(JSON.stringify({ type: "press" }));
+    const solveCounter = ++solveCounterRef.current;
+    const proof = await solveProofOfWork(
+      snapshot.powNonce,
+      snapshot.powDifficultyBits,
+    );
+
+    if (
+      solveCounter !== solveCounterRef.current ||
+      socket !== socketRef.current ||
+      socket.readyState !== WebSocket.OPEN
+    ) {
+      return false;
+    }
+
+    socket.send(JSON.stringify({ type: "press", proof }));
     return true;
   };
 
@@ -381,7 +452,8 @@ export function ButtonExperience() {
     };
   }, []);
 
-  const canPress = snapshot.connectionState === "open";
+  const canPress =
+    snapshot.connectionState === "open" && snapshot.powNonce !== null;
   const rawRemainingMs =
     snapshot.deadlineTs === null
       ? null
@@ -397,7 +469,7 @@ export function ButtonExperience() {
         ? AUTO_PRESS_BUFFER_MS
         : rawRemainingMs;
 
-  const handlePress = () => {
+  const handlePress = async () => {
     if (isPressed) {
       return;
     }
@@ -405,7 +477,8 @@ export function ButtonExperience() {
     setIsPressed(true);
     playPress();
 
-    if (!pressButton()) {
+    if (!(await pressButton())) {
+      setIsPressed(false);
       return;
     }
   };
