@@ -1,3 +1,55 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --bg-void: #060908;
+  --bg-panel: rgba(15, 22, 18, 0.82);
+  --bg-panel-strong: rgba(11, 16, 13, 0.94);
+  --line: rgba(255, 255, 255, 0.1);
+  --text: #f4f0e8;
+  --muted: #9caa9c;
+  --accent: #ff6138;
+  --accent-soft: #ffc246;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background:
+    radial-gradient(circle at top, rgba(255, 194, 70, 0.18), transparent 26%),
+    radial-gradient(circle at 20% 25%, rgba(255, 97, 56, 0.15), transparent 20%),
+    radial-gradient(circle at 80% 10%, rgba(104, 176, 113, 0.14), transparent 26%),
+    linear-gradient(180deg, #151c17 0%, #0b0f0d 55%, var(--bg-void) 100%);
+  overflow: hidden;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.8), transparent 85%);
+}
+
+a {
+  color: inherit;
+}
+
+::selection {
+  background: rgba(255, 97, 56, 0.35);
+}

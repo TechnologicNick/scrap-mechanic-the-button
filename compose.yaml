@@ -4,11 +4,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_SITE_URL=http://81.172.212.212:25565
     ports:
       - "25565:3000"
-    env_file:
-      - .env
-    environment:
-      - DATABASE_URL=/db/db.sqlite
-    volumes:
-      - ./db:/db

@@ -1,5 +1,44 @@
 import * as THREE from "three";
 
+const createCanvas = (width: number, height: number) => {
+  if (typeof OffscreenCanvas !== "undefined") {
+    return new OffscreenCanvas(width, height);
+  }
+
+  if (typeof document !== "undefined") {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    return canvas;
+  }
+
+  throw new Error("Canvas is not available in this environment");
+};
+
+const copyTextureSettings = (
+  source: THREE.Texture | null | undefined,
+  target: THREE.Texture,
+) => {
+  if (!source) {
+    return target;
+  }
+
+  target.wrapS = source.wrapS;
+  target.wrapT = source.wrapT;
+  target.repeat.copy(source.repeat);
+  target.offset.copy(source.offset);
+  target.center.copy(source.center);
+  target.rotation = source.rotation;
+  target.flipY = source.flipY;
+  target.colorSpace = source.colorSpace;
+  target.minFilter = source.minFilter;
+  target.magFilter = source.magFilter;
+  target.anisotropy = source.anisotropy;
+  target.generateMipmaps = source.generateMipmaps;
+
+  return target;
+};
+
 export const invertNormalMap = (material: THREE.MeshStandardMaterial) => {
   const image = material.normalMap?.image;
   if (!image) {
@@ -8,18 +47,13 @@ export const invertNormalMap = (material: THREE.MeshStandardMaterial) => {
 
   const width = image.width;
   const height = image.height;
-  const canvas = new OffscreenCanvas(width, height);
+  const canvas = createCanvas(width, height);
   const ctx = canvas.getContext("2d");
   if (!ctx) {
     throw new Error("Could not get 2d context");
   }
 
-  // Flip the image vertically
-  ctx.save(); // Save the current state of the context
-  ctx.translate(0, canvas.height); // Move the origin to the bottom-left corner
-  ctx.scale(1, -1); // Scale vertically by -1 (flip vertically)
-  ctx.drawImage(image, 0, 0, canvas.width, canvas.height); // Draw the image
-  ctx.restore(); // Restore the context to its original state
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
 
   const imageData = ctx.getImageData(0, 0, width, height);
   const pixels = imageData.data;
@@ -35,10 +69,12 @@ export const invertNormalMap = (material: THREE.MeshStandardMaterial) => {
 
   ctx.putImageData(imageData, 0, 0);
 
-  const normalMap = new THREE.CanvasTexture(canvas);
-  normalMap.wrapS = THREE.RepeatWrapping;
-  normalMap.wrapT = THREE.RepeatWrapping;
-  normalMap.repeat.set(1, 1);
+  const normalMap = copyTextureSettings(
+    material.normalMap,
+    new THREE.CanvasTexture(canvas),
+  );
+  normalMap.colorSpace = THREE.NoColorSpace;
+  normalMap.needsUpdate = true;
 
   return normalMap;
 };
@@ -54,7 +90,7 @@ export const applyColor = (
 
   const width = image.width;
   const height = image.height;
-  const canvas = new OffscreenCanvas(width, height);
+  const canvas = createCanvas(width, height);
   const ctx = canvas.getContext("2d");
   if (!ctx) {
     throw new Error("Could not get 2d context");
@@ -63,12 +99,7 @@ export const applyColor = (
   ctx.fillStyle = color.getStyle();
   ctx.fillRect(0, 0, width, height);
 
-  // Flip the image vertically
-  ctx.save(); // Save the current state of the context
-  ctx.translate(0, canvas.height); // Move the origin to the bottom-left corner
-  ctx.scale(1, -1); // Scale vertically by -1 (flip vertically)
-  ctx.drawImage(image, 0, 0, canvas.width, canvas.height); // Draw the image
-  ctx.restore(); // Restore the context to its original state
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
 
   // Debugging
   // canvas.convertToBlob().then((blob) => {
@@ -86,18 +117,16 @@ export const applyColor = (
   // material.normalMap = null;
   // material.color = color;
 
-  const map = new THREE.CanvasTexture(canvas);
-  map.wrapS = THREE.RepeatWrapping;
-  map.wrapT = THREE.RepeatWrapping;
-  map.repeat.set(1, 1);
+  const map = copyTextureSettings(material.map, new THREE.CanvasTexture(canvas));
+  map.needsUpdate = true;
 
-  return new THREE.MeshStandardMaterial({
-    map: map,
-    normalMap: material.normalMap,
-    normalMapType: THREE.TangentSpaceNormalMap,
-    name: `${material.name} (colored)`,
-    userData: {
-      hasColorBeenApplied: true,
-    },
-  });
+  const coloredMaterial = material.clone();
+  coloredMaterial.map = map;
+  coloredMaterial.name = `${material.name} (colored)`;
+  coloredMaterial.userData = {
+    ...material.userData,
+    hasColorBeenApplied: true,
+  };
+
+  return coloredMaterial;
 };

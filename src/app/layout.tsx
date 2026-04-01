@@ -1,20 +1,39 @@
 import "~/styles/globals.css";
 
-import { Inter } from "next/font/google";
+import { Metadata } from "next";
+import { Bebas_Neue, Space_Grotesk } from "next/font/google";
 
-import { Providers } from "./providers";
-import { env } from "~/env";
-
-const inter = Inter({
+const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],
   variable: "--font-sans",
 });
 
-export const metadata = {
-  title: "Scrap Mechanic Casino",
-  description: "Gamble all your hard-earned resources away!",
+const bebasNeue = Bebas_Neue({
+  subsets: ["latin"],
+  weight: "400",
+  variable: "--font-display",
+});
+
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
+const metadataBase = new URL(siteUrl);
+const previewImageUrl = new URL("/preview2.png", metadataBase).toString();
+
+export const metadata: Metadata = {
+  title: "CHAPTER 2 TRAILER IN...",
+  description: "Countdown to the Scrap Mechanic Chapter 2 trailer.",
+  metadataBase,
   icons: [{ rel: "icon", url: "/favicon.ico" }],
-  metadataBase: env.APP_URL ? new URL(env.APP_URL) : undefined,
+  openGraph: {
+    title: "CHAPTER 2 TRAILER IN...",
+    description: "Countdown to the Scrap Mechanic Chapter 2 trailer.",
+    images: [previewImageUrl],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "CHAPTER 2 TRAILER IN...",
+    description: "Countdown to the Scrap Mechanic Chapter 2 trailer.",
+    images: [previewImageUrl],
+  },
 };
 
 export default function RootLayout({
@@ -23,11 +42,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className="h-full dark">
+    <html lang="en" className="dark h-full">
       <body
-        className={`font-sans ${inter.variable} h-full [&>div:first-child]:h-full`}
+        className={`${spaceGrotesk.variable} ${bebasNeue.variable} h-full font-sans antialiased`}
       >
-        <Providers>{children}</Providers>
+        {children}
       </body>
     </html>
   );
