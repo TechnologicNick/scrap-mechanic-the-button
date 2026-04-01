@@ -12,7 +12,6 @@ const port = Number(process.env.PORT ?? 3000);
 let deadlineTs = Date.now() + RESET_DURATION_MS;
 let lastResetAtTs = Date.now();
 let lastResetSource = "initial";
-let lastBroadcastManualResetAtTs = 0;
 let sequence = 0;
 let autoPressTimeout = null;
 
@@ -20,6 +19,7 @@ const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 const websocketServer = new WebSocketServer({ noServer: true });
 const clients = new Set();
+const manualResetCooldownByClient = new WeakMap();
 
 function formatRemainingTime(milliseconds) {
   const clamped = Math.max(0, milliseconds);
@@ -85,9 +85,6 @@ function resetCountdown(source) {
   deadlineTs = Date.now() + RESET_DURATION_MS;
   lastResetAtTs = Date.now();
   lastResetSource = source;
-  if (source === "manual") {
-    lastBroadcastManualResetAtTs = lastResetAtTs;
-  }
   sequence += 1;
 
   scheduleAutoPress();
@@ -111,9 +108,11 @@ function handleSocketMessage(websocket, rawMessage) {
 
   if (message?.type === "press") {
     const now = Date.now();
+    const lastManualResetAtTs =
+      manualResetCooldownByClient.get(websocket) ?? 0;
     const cooldownRemainingMs = Math.max(
       0,
-      lastBroadcastManualResetAtTs + MANUAL_RESET_RATE_LIMIT_MS - now,
+      lastManualResetAtTs + MANUAL_RESET_RATE_LIMIT_MS - now,
     );
 
     if (cooldownRemainingMs > 0) {
@@ -136,6 +135,7 @@ function handleSocketMessage(websocket, rawMessage) {
       return;
     }
 
+    manualResetCooldownByClient.set(websocket, now);
     resetCountdown("manual");
   }
 }
