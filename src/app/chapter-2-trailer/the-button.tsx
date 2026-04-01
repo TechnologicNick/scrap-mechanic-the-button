@@ -113,13 +113,17 @@ function useButtonSocket() {
     startedAt: number;
     jobId: number;
     nonce: string;
-    resolve: (success: boolean) => void;
+  } | null>(null);
+  const solvedProofRef = useRef<{
+    nonce: string;
+    proof: number;
   } | null>(null);
   const nextSolveJobIdRef = useRef(1);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const [snapshot, setSnapshot] = useState<SocketSnapshot>(
     INITIAL_SOCKET_SNAPSHOT,
   );
+  const [powReady, setPowReady] = useState(false);
 
   useEffect(() => {
     snapshotRef.current = snapshot;
@@ -132,7 +136,7 @@ function useButtonSocket() {
     });
     workerRef.current = worker;
 
-    const cancelActiveSolve = () => {
+    const cancelActiveSolve = (reason: string) => {
       const activeSolve = activeSolveRef.current;
       if (!activeSolve) {
         return;
@@ -142,9 +146,50 @@ function useButtonSocket() {
         jobId: activeSolve.jobId,
         type: "cancel",
       });
-      console.info(`[pow] canceled job ${activeSolve.jobId}`);
-      activeSolve.resolve(false);
+      console.info(`[pow] canceled job ${activeSolve.jobId}: ${reason}`);
       activeSolveRef.current = null;
+    };
+
+    const startBackgroundSolve = (
+      nonce: null | string,
+      difficultyBits: number,
+    ) => {
+      if (!nonce || difficultyBits <= 0) {
+        cancelActiveSolve("missing challenge");
+        solvedProofRef.current = null;
+        setPowReady(false);
+        return;
+      }
+
+      if (solvedProofRef.current?.nonce === nonce) {
+        setPowReady(true);
+        return;
+      }
+
+      if (activeSolveRef.current?.nonce === nonce) {
+        return;
+      }
+
+      cancelActiveSolve("replaced by new challenge");
+      solvedProofRef.current = null;
+      setPowReady(false);
+
+      const jobId = nextSolveJobIdRef.current++;
+      console.info(
+        `[pow] starting background job ${jobId} for nonce ${nonce} at difficulty ${difficultyBits}`,
+      );
+      activeSolveRef.current = {
+        startedAt: Date.now(),
+        jobId,
+        nonce,
+      };
+
+      worker.postMessage({
+        difficultyBits,
+        jobId,
+        nonce,
+        type: "solve",
+      });
     };
 
     worker.onmessage = (event: MessageEvent<SolveWorkerResponse>) => {
@@ -164,22 +209,16 @@ function useButtonSocket() {
 
       if (message.type === "error") {
         console.error(`[pow] job ${message.jobId} failed: ${message.message}`);
-        activeSolve.resolve(false);
+        setPowReady(false);
         activeSolveRef.current = null;
         return;
       }
 
-      const socket = socketRef.current;
       const latestSnapshot = snapshotRef.current;
-      if (
-        !socket ||
-        socket.readyState !== WebSocket.OPEN ||
-        latestSnapshot.powNonce !== activeSolve.nonce
-      ) {
+      if (latestSnapshot.powNonce !== activeSolve.nonce) {
         console.info(
           `[pow] discarded solved proof for job ${message.jobId} because the nonce changed`,
         );
-        activeSolve.resolve(false);
         activeSolveRef.current = null;
         return;
       }
@@ -187,9 +226,11 @@ function useButtonSocket() {
       console.info(
         `[pow] job ${message.jobId} solved in ${Date.now() - activeSolve.startedAt}ms after ${message.attempts.toLocaleString()} attempts`,
       );
-      socket.send(JSON.stringify({ type: "press", proof: message.proof }));
-      console.info(`[pow] job ${message.jobId} sent proof ${message.proof}`);
-      activeSolve.resolve(true);
+      solvedProofRef.current = {
+        nonce: activeSolve.nonce,
+        proof: message.proof,
+      };
+      setPowReady(true);
       activeSolveRef.current = null;
     };
 
@@ -205,7 +246,9 @@ function useButtonSocket() {
         return;
       }
 
-      cancelActiveSolve();
+      cancelActiveSolve("connection closed");
+      solvedProofRef.current = null;
+      setPowReady(false);
       setSnapshot((current) => ({
         ...current,
         connectionState: "closed",
@@ -254,8 +297,10 @@ function useButtonSocket() {
           return;
         }
 
-        if (snapshotRef.current.powNonce !== message.powNonce) {
-          cancelActiveSolve();
+        const previousNonce = snapshotRef.current.powNonce;
+        if (previousNonce !== message.powNonce) {
+          solvedProofRef.current = null;
+          setPowReady(false);
         }
         setSnapshot({
           connectionState: "open",
@@ -267,6 +312,7 @@ function useButtonSocket() {
           powDifficultyBits: message.powDifficultyBits,
           sequence: message.sequence,
         });
+        startBackgroundSolve(message.powNonce, message.powDifficultyBits);
       });
 
       socket.addEventListener("close", scheduleReconnect);
@@ -279,7 +325,8 @@ function useButtonSocket() {
 
     return () => {
       cancelled = true;
-      cancelActiveSolve();
+      cancelActiveSolve("component unmounted");
+      solvedProofRef.current = null;
       clearReconnectTimeout();
       socketRef.current?.close();
       socketRef.current = null;
@@ -288,62 +335,39 @@ function useButtonSocket() {
     };
   }, []);
 
-  const pressButton = async () => {
+  const pressButton = () => {
     const socket = socketRef.current;
-    const worker = workerRef.current;
     const currentSnapshot = snapshotRef.current;
+    const solvedProof = solvedProofRef.current;
 
     if (
       !socket ||
-      !worker ||
       socket.readyState !== WebSocket.OPEN ||
       !currentSnapshot.powNonce ||
-      currentSnapshot.powDifficultyBits <= 0 ||
-      activeSolveRef.current
+      !solvedProof ||
+      solvedProof.nonce !== currentSnapshot.powNonce
     ) {
+      console.info("[pow] press ignored because no solved proof is ready yet");
       return false;
     }
 
-    return await new Promise<boolean>((resolve) => {
-      const jobId = nextSolveJobIdRef.current++;
-      console.info(
-        `[pow] starting job ${jobId} for nonce ${currentSnapshot.powNonce} at difficulty ${currentSnapshot.powDifficultyBits}`,
-      );
-      activeSolveRef.current = {
-        startedAt: Date.now(),
-        jobId,
-        nonce: currentSnapshot.powNonce!,
-        resolve,
-      };
-
-      worker.postMessage({
-        difficultyBits: currentSnapshot.powDifficultyBits,
-        jobId,
-        nonce: currentSnapshot.powNonce,
-        type: "solve",
-      });
-    });
+    socket.send(JSON.stringify({ type: "press", proof: solvedProof.proof }));
+    console.info(
+      `[pow] submitted cached proof ${solvedProof.proof} for nonce ${solvedProof.nonce}`,
+    );
+    solvedProofRef.current = null;
+    setPowReady(false);
+    return true;
   };
 
   const cancelPendingPress = () => {
-    const activeSolve = activeSolveRef.current;
-    const worker = workerRef.current;
-
-    if (!activeSolve || !worker) {
-      return;
-    }
-
-    worker.postMessage({
-      jobId: activeSolve.jobId,
-      type: "cancel",
-    });
-    activeSolve.resolve(false);
-    activeSolveRef.current = null;
+    // Proof-of-work now runs independently in the background.
   };
 
   return {
     cancelPendingPress,
     pressButton,
+    powReady,
     snapshot,
   };
 }
@@ -510,7 +534,8 @@ export function ButtonExperience() {
   const [clientNow, setClientNow] = useState(() => Date.now());
   const [isPressed, setIsPressed] = useState(false);
   const isPressedRef = useRef(false);
-  const { cancelPendingPress, pressButton, snapshot } = useButtonSocket();
+  const { cancelPendingPress, pressButton, powReady, snapshot } =
+    useButtonSocket();
   const { playPress, playRelease } = useButtonAudio();
 
   useEffect(() => {
@@ -524,7 +549,9 @@ export function ButtonExperience() {
   }, []);
 
   const canPress =
-    snapshot.connectionState === "open" && snapshot.powNonce !== null;
+    snapshot.connectionState === "open" &&
+    snapshot.powNonce !== null &&
+    powReady;
   const rawRemainingMs =
     snapshot.deadlineTs === null
       ? null
@@ -545,7 +572,7 @@ export function ButtonExperience() {
     setIsPressed(nextIsPressed);
   };
 
-  const handlePress = async () => {
+  const handlePress = () => {
     if (isPressedRef.current) {
       return;
     }
@@ -553,7 +580,7 @@ export function ButtonExperience() {
     setPressedState(true);
     playPress();
 
-    if (!(await pressButton())) {
+    if (!pressButton()) {
       if (isPressedRef.current) {
         setPressedState(false);
       }
