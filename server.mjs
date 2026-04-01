@@ -3,6 +3,7 @@ import next from "next";
 import { WebSocketServer } from "ws";
 
 const RESET_DURATION_MS = 5 * 60 * 1000;
+const MANUAL_RESET_RATE_LIMIT_MS = 4 * 60 * 1000;
 const AUTO_PRESS_BUFFER_MS = 3_000;
 const dev = process.argv.includes("--dev");
 const hostname = process.env.HOSTNAME ?? "0.0.0.0";
@@ -11,6 +12,7 @@ const port = Number(process.env.PORT ?? 3000);
 let deadlineTs = Date.now() + RESET_DURATION_MS;
 let lastResetAtTs = Date.now();
 let lastResetSource = "initial";
+let lastBroadcastManualResetAtTs = 0;
 let sequence = 0;
 let autoPressTimeout = null;
 
@@ -31,6 +33,22 @@ function formatRemainingTime(milliseconds) {
 }
 
 function getStateMessage() {
+  return JSON.stringify({
+    type: "state",
+    deadlineTs,
+    serverNowTs: Date.now(),
+    lastResetAtTs,
+    lastResetSource,
+    sequence,
+  });
+}
+
+function getStateMessageForDeadline({
+  deadlineTs,
+  lastResetAtTs,
+  lastResetSource,
+  sequence,
+}) {
   return JSON.stringify({
     type: "state",
     deadlineTs,
@@ -67,6 +85,9 @@ function resetCountdown(source) {
   deadlineTs = Date.now() + RESET_DURATION_MS;
   lastResetAtTs = Date.now();
   lastResetSource = source;
+  if (source === "manual") {
+    lastBroadcastManualResetAtTs = lastResetAtTs;
+  }
   sequence += 1;
 
   scheduleAutoPress();
@@ -79,7 +100,7 @@ function resetCountdown(source) {
   );
 }
 
-function handleSocketMessage(rawMessage) {
+function handleSocketMessage(websocket, rawMessage) {
   let message;
 
   try {
@@ -89,6 +110,32 @@ function handleSocketMessage(rawMessage) {
   }
 
   if (message?.type === "press") {
+    const now = Date.now();
+    const cooldownRemainingMs = Math.max(
+      0,
+      lastBroadcastManualResetAtTs + MANUAL_RESET_RATE_LIMIT_MS - now,
+    );
+
+    if (cooldownRemainingMs > 0) {
+      websocket.send(
+        getStateMessageForDeadline({
+          deadlineTs: now + RESET_DURATION_MS,
+          lastResetAtTs: now,
+          lastResetSource: "manual",
+          sequence,
+        }),
+      );
+
+      console.log(
+        `[button] suppressed manual reset with ${formatRemainingTime(
+          Math.max(0, deadlineTs - now),
+        )} remaining, cooldown ${formatRemainingTime(
+          cooldownRemainingMs,
+        )} remaining`,
+      );
+      return;
+    }
+
     resetCountdown("manual");
   }
 }
@@ -116,7 +163,9 @@ server.on("upgrade", (request, socket, head) => {
     clients.add(websocket);
     websocket.send(getStateMessage());
 
-    websocket.on("message", handleSocketMessage);
+    websocket.on("message", (rawMessage) =>
+      handleSocketMessage(websocket, rawMessage),
+    );
     websocket.on("close", () => {
       clients.delete(websocket);
     });
