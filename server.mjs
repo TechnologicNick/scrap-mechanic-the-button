@@ -6,7 +6,7 @@ import { WebSocketServer } from "ws";
 const RESET_DURATION_MS = 5 * 60 * 1000;
 const MANUAL_RESET_RATE_LIMIT_MS = 4 * 60 * 1000;
 const AUTO_PRESS_BUFFER_MS = 3_000;
-const POW_DIFFICULTY_BITS = 18;
+const POW_DIFFICULTY_BITS = 16;
 const dev = process.argv.includes("--dev");
 const hostname = process.env.HOSTNAME ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? 3000);
@@ -75,11 +75,6 @@ function broadcastState() {
 
   for (const client of clients) {
     if (client.readyState === client.OPEN) {
-      const clientState = clientStateBySocket.get(client);
-      if (clientState) {
-        clientState.powNonce = randomBytes(16).toString("hex");
-      }
-
       client.send(getStateMessageForClient(client));
       broadcastCount += 1;
     }

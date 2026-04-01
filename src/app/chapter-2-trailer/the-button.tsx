@@ -36,7 +36,8 @@ type SocketSnapshot = {
 };
 
 type SolveWorkerResponse =
-  | { jobId: number; proof: number; type: "solved" }
+  | { attempts: number; jobId: number; type: "progress" }
+  | { attempts: number; jobId: number; proof: number; type: "solved" }
   | { jobId: number; message: string; type: "error" };
 
 const INITIAL_SOCKET_SNAPSHOT: SocketSnapshot = {
@@ -109,6 +110,7 @@ function useButtonSocket() {
   const workerRef = useRef<Worker | null>(null);
   const snapshotRef = useRef<SocketSnapshot>(INITIAL_SOCKET_SNAPSHOT);
   const activeSolveRef = useRef<{
+    startedAt: number;
     jobId: number;
     nonce: string;
     resolve: (success: boolean) => void;
@@ -140,6 +142,7 @@ function useButtonSocket() {
         jobId: activeSolve.jobId,
         type: "cancel",
       });
+      console.info(`[pow] canceled job ${activeSolve.jobId}`);
       activeSolve.resolve(false);
       activeSolveRef.current = null;
     };
@@ -152,7 +155,15 @@ function useButtonSocket() {
         return;
       }
 
+      if (message.type === "progress") {
+        console.info(
+          `[pow] job ${message.jobId} searching... ${message.attempts.toLocaleString()} attempts`,
+        );
+        return;
+      }
+
       if (message.type === "error") {
+        console.error(`[pow] job ${message.jobId} failed: ${message.message}`);
         activeSolve.resolve(false);
         activeSolveRef.current = null;
         return;
@@ -165,12 +176,19 @@ function useButtonSocket() {
         socket.readyState !== WebSocket.OPEN ||
         latestSnapshot.powNonce !== activeSolve.nonce
       ) {
+        console.info(
+          `[pow] discarded solved proof for job ${message.jobId} because the nonce changed`,
+        );
         activeSolve.resolve(false);
         activeSolveRef.current = null;
         return;
       }
 
+      console.info(
+        `[pow] job ${message.jobId} solved in ${Date.now() - activeSolve.startedAt}ms after ${message.attempts.toLocaleString()} attempts`,
+      );
       socket.send(JSON.stringify({ type: "press", proof: message.proof }));
+      console.info(`[pow] job ${message.jobId} sent proof ${message.proof}`);
       activeSolve.resolve(true);
       activeSolveRef.current = null;
     };
@@ -236,7 +254,9 @@ function useButtonSocket() {
           return;
         }
 
-        cancelActiveSolve();
+        if (snapshotRef.current.powNonce !== message.powNonce) {
+          cancelActiveSolve();
+        }
         setSnapshot({
           connectionState: "open",
           deadlineTs: message.deadlineTs,
@@ -286,7 +306,11 @@ function useButtonSocket() {
 
     return await new Promise<boolean>((resolve) => {
       const jobId = nextSolveJobIdRef.current++;
+      console.info(
+        `[pow] starting job ${jobId} for nonce ${currentSnapshot.powNonce} at difficulty ${currentSnapshot.powDifficultyBits}`,
+      );
       activeSolveRef.current = {
+        startedAt: Date.now(),
         jobId,
         nonce: currentSnapshot.powNonce!,
         resolve,

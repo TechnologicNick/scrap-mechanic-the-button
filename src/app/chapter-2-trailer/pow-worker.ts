@@ -13,10 +13,15 @@ type CancelMessage = {
 };
 
 type WorkerMessage = CancelMessage | SolveMessage;
+type WorkerResponse =
+  | { type: "progress"; attempts: number; jobId: number }
+  | { type: "solved"; attempts: number; jobId: number; proof: number }
+  | { type: "error"; jobId: number; message: string };
 
 const workerScope = self as DedicatedWorkerGlobalScope;
 const encoder = new TextEncoder();
 let activeJobId: null | number = null;
+const PROGRESS_INTERVAL = 4_096;
 
 function countLeadingZeroBits(bytes: Uint8Array) {
   let zeroBits = 0;
@@ -62,11 +67,20 @@ async function solveProofOfWork({
 
     if (countLeadingZeroBits(new Uint8Array(digest)) >= difficultyBits) {
       workerScope.postMessage({
+        attempts: proof + 1,
         jobId,
         proof,
         type: "solved",
-      });
+      } satisfies WorkerResponse);
       return;
+    }
+
+    if (proof > 0 && proof % PROGRESS_INTERVAL === 0) {
+      workerScope.postMessage({
+        attempts: proof + 1,
+        jobId,
+        type: "progress",
+      } satisfies WorkerResponse);
     }
   }
 }
@@ -86,6 +100,6 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
       jobId: message.jobId,
       message: error instanceof Error ? error.message : "Unknown worker error",
       type: "error",
-    });
+    } satisfies WorkerResponse);
   });
 };
